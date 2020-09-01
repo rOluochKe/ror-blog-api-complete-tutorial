@@ -1,136 +1,305 @@
 require 'rails_helper'
 
-RSpec.describe AccessTokensController, type: :controller do
-  describe 'POST #create' do
-    let(:params) do
-      {
-        data: {
-          attributes: { login: 'jsmith', password: 'secret' }
-        }
-      }
+describe ArticlesController do
+  describe '#index' do
+    subject { get :index }
+
+    it 'should return success response' do
+      subject
+      expect(response).to have_http_status(:ok)
     end
 
-    context 'when no auth_data provided' do
-      subject { post :create }
-      it_behaves_like 'unauthorized_standard_requests'
-    end
-
-    context 'when invalid login provided' do
-      let(:user) { create :user, login: 'invalid', password: 'secret' }
-      subject { post :create, params: params }
-
-      before { user }
-
-      it_behaves_like 'unauthorized_standard_requests'
-    end
-
-    context 'when invalid password provided' do
-      let(:user) { create :user, login: 'jsmith', password: 'invalid' }
-      subject { post :create, params: params }
-
-      before { user }
-
-      it_behaves_like 'unauthorized_standard_requests'
-    end
-
-    context 'when valid data provided' do
-      let(:user) { create :user, login: 'jsmith', password: 'secret' }
-      subject { post :create, params: params }
-
-      before { user }
-
-      it 'should return 201 status code' do
-        subject
-        expect(response).to have_http_status(:created)
+    it 'should return proper json' do
+      create_list :article, 2
+      subject
+      Article.recent.each_with_index do |article, index|
+        expect(json_data[index]['attributes']).to eq({
+          "title" => article.title,
+          "content" => article.content,
+          "slug" => article.slug
+        })
       end
+    end
 
-      it 'should return proper json body' do
-        subject
-        expect(json_data['attributes']).to eq(
-          { 'token' => user.access_token.token }
-        )
-      end
+    it 'should return articles in the proper order' do
+      old_article = create :article
+      newer_article = create :article
+      subject
+      expect(json_data.first['id']).to eq(newer_article.id.to_s)
+      expect(json_data.last['id']).to eq(old_article.id.to_s)
+    end
+
+    it 'should paginate results' do
+      create_list :article, 3
+      get :index, params: { page: 2, per_page: 1 }
+      expect(json_data.length).to eq 1
+      expected_article = Article.recent.second.id.to_s
+      expect(json_data.first['id']).to eq(expected_article)
+    end
+  end
+
+  describe '#show' do
+    let(:article) { create :article }
+    subject { get :show, params: { id: article.id } }
+
+    it 'should return success response' do
+      subject
+      expect(response).to have_http_status(:ok)
+    end
+
+    it 'should return proper json' do
+      subject
+      expect(json_data['attributes']).to eq({
+          "title" => article.title,
+          "content" => article.content,
+          "slug" => article.slug
+      })
+    end
+  end
+
+  describe '#create' do
+    subject { post :create }
+
+    context 'when no code provided' do
+      it_behaves_like 'forbidden_requests'
     end
 
     context 'when invalid code provided' do
-      let(:github_error) do
-        double('Sawyer::Resource', error: 'bad_verification_code')
-      end
-
-      before do
-        allow_any_instance_of(Octokit::Client).to receive(
-          :exchange_code_for_token
-        ).and_return(github_error)
-      end
-
-      subject { post :create, params: { code: 'invalid_code' } }
-
-      it_behaves_like 'unauthorized_oauth_requests'
+      before { request.headers['authorization'] = 'Invalid token' }
+      it_behaves_like 'forbidden_requests'
     end
 
-    context 'when success request' do
-      let(:user_data) do
-        {
-          login: 'jsmith1',
-          url: 'http://example.com',
-          avatar_url: 'http://example.com/avatar',
-          name: 'John Smith'
-        }
+    context 'when authorized' do
+      let(:access_token) { create :access_token }
+      before { request.headers['authorization'] = "Bearer #{access_token.token}" }
+
+      context 'when invalid parameters provided' do
+        let(:invalid_attributes) do
+          {
+            data: {
+              attributes: {
+                title: '',
+                content: ''
+              }
+            }
+          }
+        end
+
+        subject { post :create, params: invalid_attributes }
+
+        it 'should return 422 status code' do
+          subject
+          expect(response).to have_http_status(:unprocessable_entity)
+        end
+
+        it 'should return proper error json' do
+          subject
+          expect(json['errors']).to include(
+            {
+              "source" => { "pointer" => "/data/attributes/title" },
+              "detail" =>  "can't be blank"
+            },
+            {
+              "source" => { "pointer" => "/data/attributes/content" },
+              "detail" =>  "can't be blank"
+            },
+            {
+              "source" => { "pointer" => "/data/attributes/slug" },
+              "detail" =>  "can't be blank"
+            }
+          )
+        end
       end
 
-      before do
-        allow_any_instance_of(Octokit::Client).to receive(
-          :exchange_code_for_token
-        ).and_return('validaccesstoken')
+      context 'when success request sent' do
+        let(:access_token) { create :access_token }
+        before { request.headers['authorization'] = "Bearer #{access_token.token}" }
 
-        allow_any_instance_of(Octokit::Client).to receive(
-          :user
-        ).and_return(user_data)
-      end
+        let(:valid_attributes) do
+          {
+            'data' => {
+              'attributes' => {
+                'title' => 'Awesome article',
+                'content' => 'Super content',
+                'slug' => 'awesome-article'
+              }
+            }
+          }
+        end
 
-      subject { post :create, params: { code: 'valid_code' } }
+        subject { post :create, params: valid_attributes }
 
-      it 'should return 201 status code' do
-        subject
-        expect(response).to have_http_status(:created)
-      end
+        it 'should have 201 status code' do
+          subject
+          expect(response).to have_http_status(:created)
+        end
 
-      it 'should return proper json body' do
-        expect { subject }.to change { User.count }.by(1)
-        user = User.find_by(login: 'jsmith1')
-        expect(json_data['attributes']).to eq(
-          { 'token' => user.access_token.token }
-        )
+        it 'should have proper json body' do
+          subject
+          expect(json_data['attributes']).to include(
+            valid_attributes['data']['attributes']
+          )
+        end
+
+        it 'should create the article' do
+          expect{ subject }.to change{ Article.count }.by(1)
+        end
       end
     end
   end
 
-  describe 'DELETE #destroy' do
-    subject { delete :destroy }
+  describe '#update' do
+    let(:user) { create :user }
+    let(:article) { create :article, user: user }
+    let(:access_token) { user.create_access_token }
 
-    context 'when no authorization header provided' do
+    subject { patch :update, params: { id: article.id } }
+
+    context 'when no code provided' do
       it_behaves_like 'forbidden_requests'
     end
 
-    context 'when invalid authorization header provided' do
+    context 'when invalid code provided' do
       before { request.headers['authorization'] = 'Invalid token' }
-
       it_behaves_like 'forbidden_requests'
     end
 
-    context 'when valid request' do
-      let(:user) { create :user }
-      let(:access_token) { user.create_access_token }
+    context 'when trying to update not owned article' do
+      let(:other_user) { create :user }
+      let(:other_article) { create :article, user: other_user }
 
+      subject { patch :update, params: { id: other_article.id } }
       before { request.headers['authorization'] = "Bearer #{access_token.token}" }
 
-      it 'should return 204 status code' do
-        subject
-        expect(response).to have_http_status(:no_content)
+      it_behaves_like 'forbidden_requests'
+    end
+
+    context 'when authorized' do
+      before { request.headers['authorization'] = "Bearer #{access_token.token}" }
+
+      context 'when invalid parameters provided' do
+        let(:invalid_attributes) do
+          {
+            data: {
+              attributes: {
+                title: '',
+                content: ''
+              }
+            }
+          }
+        end
+
+        subject do
+          patch :update, params: invalid_attributes.merge(id: article.id)
+        end
+
+        it 'should return 422 status code' do
+          subject
+          expect(response).to have_http_status(:unprocessable_entity)
+        end
+
+        it 'should return proper error json' do
+          subject
+          expect(json['errors']).to include(
+            {
+              "source" => { "pointer" => "/data/attributes/title" },
+              "detail" =>  "can't be blank"
+            },
+            {
+              "source" => { "pointer" => "/data/attributes/content" },
+              "detail" =>  "can't be blank"
+            }
+          )
+        end
       end
 
-      it 'should remove the proper access token' do
-        expect { subject }.to change { AccessToken.count }.by(-1)
+      context 'when success request sent' do
+        before { request.headers['authorization'] = "Bearer #{access_token.token}" }
+
+        let(:valid_attributes) do
+          {
+            'data' => {
+              'attributes' => {
+                'title' => 'Awesome article',
+                'content' => 'Super content',
+                'slug' => 'awesome-article'
+              }
+            }
+          }
+        end
+
+        subject do
+          patch :update, params: valid_attributes.merge(id: article.id)
+        end
+
+        it 'should have 200 status code' do
+          subject
+          expect(response).to have_http_status(:ok)
+        end
+
+        it 'should have proper json body' do
+          subject
+          expect(json_data['attributes']).to include(
+            valid_attributes['data']['attributes']
+          )
+        end
+
+        it 'should update the article' do
+          subject
+          expect(article.reload.title).to eq(
+            valid_attributes['data']['attributes']['title']
+          )
+        end
+      end
+    end
+  end
+
+  describe '#destroy' do
+    let(:user) { create :user }
+    let(:article) { create :article, user: user }
+    let(:access_token) { user.create_access_token }
+
+    subject { delete :destroy, params: { id: article.id } }
+
+    context 'when no code provided' do
+      it_behaves_like 'forbidden_requests'
+    end
+
+    context 'when invalid code provided' do
+      before { request.headers['authorization'] = 'Invalid token' }
+      it_behaves_like 'forbidden_requests'
+    end
+
+    context 'when trying to remove not owned article' do
+      let(:other_user) { create :user }
+      let(:other_article) { create :article, user: other_user }
+
+      subject { delete :destroy, params: { id: other_article.id } }
+      before { request.headers['authorization'] = "Bearer #{access_token.token}" }
+
+      it_behaves_like 'forbidden_requests'
+    end
+
+    context 'when authorized' do
+      before { request.headers['authorization'] = "Bearer #{access_token.token}" }
+
+      context 'when success request sent' do
+        before { request.headers['authorization'] = "Bearer #{access_token.token}" }
+
+        it 'should have 204 status code' do
+          subject
+          expect(response).to have_http_status(:no_content)
+        end
+
+        it 'should have empty json body' do
+          subject
+          expect(response.body).to be_blank
+        end
+
+        it 'should destroy the article' do
+          article
+          expect{ subject }.to change{ user.articles.count }.by(-1)
+        end
       end
     end
   end
