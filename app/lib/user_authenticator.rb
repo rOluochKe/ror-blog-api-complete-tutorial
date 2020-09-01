@@ -3,9 +3,9 @@ class UserAuthenticator
 
   def initialize(code: nil, login: nil, password: nil)
     @authenticator = if code.present?
-                       Oauth.new(code)
-                     else
-                       Standard.new(login, password)
+      Oauth.new(code)
+    else
+      Standard.new(login, password)
     end
   end
 
@@ -23,9 +23,9 @@ class UserAuthenticator
 
   def set_access_token
     @access_token = if user.access_token.present?
-                      user.access_token
-                    else
-                      user.create_access_token
+      user.access_token
+    else
+      user.create_access_token
     end
   end
 end
